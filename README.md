@@ -1,12 +1,13 @@
 # Tab Auto-Closer Firefox Extension
 
-A Firefox extension that automatically closes tabs after a customizable time period.
+A Firefox extension that automatically closes inactive tabs after a customizable time period.
 
 ## Features
 
 - Set custom time intervals for tab auto-closing (minutes or hours)
-- Timer resets when you switch to a tab
-- Simple and intuitive user interface
+- Countdown only starts when tabs become inactive (not being viewed)
+- Timer pauses when you switch to a tab
+- Pinned tabs are never closed
 - Persistent settings across browser sessions
 
 ## Installation
@@ -30,13 +31,15 @@ To modify or enhance the extension:
 1. Click the extension icon in the toolbar
 2. Set your desired time interval (in minutes or hours)
 3. Click "Save Settings"
-4. Tabs will automatically close after the specified time period
+4. Tabs will automatically close after being inactive for the specified time period
 
 ## Note
 
-- The timer for each tab starts when the tab is created or activated
+- The countdown only starts when a tab becomes inactive (when you switch away from it)
+- The timer pauses when you switch back to a tab
+- Pinned tabs are completely ignored by the extension
+- You can pin important tabs to prevent them from being closed
 - The extension will remember your settings between browser sessions
-- You can modify the time settings at any time through the popup interface
 
 ## Files Structure
 
