@@ -1,0 +1,26 @@
+{
+  "name": "tab-auto-closer",
+  "version": "1.0.0",
+  "description": "Firefox extension that automatically closes inactive tabs after a customizable time period",
+  "main": "background.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johhansantana/firefox-tab-auto-closer"
+  },
+  "keywords": [
+    "firefox",
+    "extension",
+    "addon",
+    "tabs",
+    "productivity"
+  ],
+  "author": "YOUR_NAME",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/johhansantana/firefox-tab-auto-closer/issues"
+  },
+  "homepage": "https://github.com/johhansantana/firefox-tab-auto-closer#readme"
+}
