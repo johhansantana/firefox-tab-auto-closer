@@ -18,16 +18,48 @@ async function isTabPinned(tabId) {
   }
 }
 
+// Function to check and close expired tabs
+async function checkExpiredTabs() {
+  const now = Date.now();
+  const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
+  if (!settings.timeout) return;
+
+  const timeoutMs = getTimeInMs(settings.timeout, settings.timeUnit);
+
+  for (const [tabId, tabInfo] of tabTimers.entries()) {
+    if (tabId === activeTabId) continue;
+    
+    const isPinned = await isTabPinned(tabId);
+    if (isPinned) {
+      tabTimers.delete(tabId);
+      continue;
+    }
+
+    const totalInactiveTime = tabInfo.accumulatedTime + 
+      (tabInfo.lastInactiveTime ? (now - tabInfo.lastInactiveTime) : 0);
+
+    if (totalInactiveTime >= timeoutMs) {
+      try {
+        await browser.tabs.remove(tabId);
+        tabTimers.delete(tabId);
+      } catch (error) {
+        console.error(`Error closing tab ${tabId}:`, error);
+      }
+    }
+  }
+}
+
 // Function to pause timer for a tab
 function pauseTabTimer(tabId) {
   const tabInfo = tabTimers.get(tabId);
-  if (tabInfo && tabInfo.timer) {
-    clearTimeout(tabInfo.timer);
-    tabInfo.timer = null;
-    
-    // Calculate accumulated time when pausing
+  if (tabInfo) {
     if (tabInfo.lastInactiveTime) {
       tabInfo.accumulatedTime += Date.now() - tabInfo.lastInactiveTime;
+      tabInfo.lastInactiveTime = null;
+    }
+    if (tabInfo.checkInterval) {
+      clearInterval(tabInfo.checkInterval);
+      tabInfo.checkInterval = null;
     }
   }
 }
@@ -40,54 +72,29 @@ async function startTabTimer(tabId, isNewTab = false) {
   }
 
   // Get current settings
-  browser.storage.local.get(['timeout', 'timeUnit']).then((result) => {
-    if (!result.timeout) return; // Don't start timer if no timeout is set
+  const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
+  if (!settings.timeout) return; // Don't start timer if no timeout is set
 
-    const timeoutMs = getTimeInMs(result.timeout, result.timeUnit);
+  // Initialize or get tab info
+  let tabInfo = tabTimers.get(tabId);
+  if (!tabInfo || isNewTab) {
+    tabInfo = {
+      accumulatedTime: 0,
+      lastInactiveTime: null,
+      checkInterval: null
+    };
+    tabTimers.set(tabId, tabInfo);
+  }
+
+  // Only start timer if tab is not active
+  if (tabId !== activeTabId) {
+    tabInfo.lastInactiveTime = Date.now();
     
-    // Initialize or get tab info
-    let tabInfo = tabTimers.get(tabId);
-    if (!tabInfo || isNewTab) {
-      tabInfo = {
-        accumulatedTime: 0,
-        lastInactiveTime: null,
-        timer: null
-      };
-      tabTimers.set(tabId, tabInfo);
+    // Set up periodic check
+    if (!tabInfo.checkInterval) {
+      tabInfo.checkInterval = setInterval(() => checkExpiredTabs(), 5000); // Check every 5 seconds
     }
-
-    // Only start timer if tab is not active
-    if (tabId !== activeTabId) {
-      tabInfo.lastInactiveTime = Date.now();
-      
-      // Calculate remaining time
-      const remainingTime = timeoutMs - tabInfo.accumulatedTime;
-      
-      if (remainingTime <= 0) {
-        // Check if tab is pinned before closing
-        isTabPinned(tabId).then(isPinned => {
-          if (!isPinned) {
-            browser.tabs.remove(tabId).catch((error) => {
-              console.error(`Error closing tab ${tabId}:`, error);
-            });
-            tabTimers.delete(tabId);
-          }
-        });
-      } else {
-        // Set timer for remaining time
-        tabInfo.timer = setTimeout(async () => {
-          // Check if tab is pinned before closing
-          const isPinned = await isTabPinned(tabId);
-          if (!isPinned) {
-            browser.tabs.remove(tabId).catch((error) => {
-              console.error(`Error closing tab ${tabId}:`, error);
-            });
-            tabTimers.delete(tabId);
-          }
-        }, remainingTime);
-      }
-    }
-  });
+  }
 }
 
 // Listen for new tabs
@@ -154,5 +161,15 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
   if (tabs[0]) {
     activeTabId = tabs[0].id;
+  }
+});
+
+// Set up periodic check for all tabs
+setInterval(checkExpiredTabs, 5000); // Check every 5 seconds
+
+// Listen for visibility changes (when browser window becomes visible again)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    checkExpiredTabs();
   }
 });

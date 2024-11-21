@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Tab Auto-Closer",
-  "version": "1.0",
+  "version": "1.1.0",
   "description": "Automatically closes tabs after a customizable time period",
   "homepage_url": "https://github.com/johhansantana/firefox-tab-auto-closer",
   "permissions": [
