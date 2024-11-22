@@ -1,175 +1,193 @@
-// Store tab timers and their accumulated inactive time
-let tabTimers = new Map();
 let activeTabId = null;
+const tabTimers = new Map();
 
-// Convert time to milliseconds
-function getTimeInMs(timeout, timeUnit) {
-  return timeout * (timeUnit === 'hours' ? 3600000 : 60000);
+// Format remaining time in a human-readable way
+function formatTimeRemaining(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+
+  if (hours > 0) {
+    const remainingMinutes = minutes % 60;
+    return `${hours}h ${remainingMinutes}m`;
+  } else if (minutes > 0) {
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  } else {
+    return `${seconds}s`;
+  }
 }
 
-// Function to check if a tab is pinned
-async function isTabPinned(tabId) {
+// Convert time to milliseconds based on unit
+function getTimeInMs(time, unit) {
+  switch (unit) {
+    case 'minutes':
+      return time * 60 * 1000;
+    case 'hours':
+      return time * 60 * 60 * 1000;
+    default:
+      return time * 60 * 1000; // Default to minutes
+  }
+}
+
+// Initialize context menu
+function initializeContextMenu() {
+  browser.menus.create({
+    id: "tab-time-remaining",
+    title: "Time remaining",
+    contexts: ["tab"]
+  });
+}
+
+// Update context menu title for a specific tab
+async function updateContextMenuTitle(tabId) {
   try {
     const tab = await browser.tabs.get(tabId);
-    return tab.pinned;
-  } catch (error) {
-    console.error(`Error checking if tab ${tabId} is pinned:`, error);
-    return false;
-  }
-}
-
-// Function to check and close expired tabs
-async function checkExpiredTabs() {
-  const now = Date.now();
-  const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
-  if (!settings.timeout) return;
-
-  const timeoutMs = getTimeInMs(settings.timeout, settings.timeUnit);
-
-  for (const [tabId, tabInfo] of tabTimers.entries()) {
-    if (tabId === activeTabId) continue;
-    
-    const isPinned = await isTabPinned(tabId);
-    if (isPinned) {
-      tabTimers.delete(tabId);
-      continue;
+    if (!tab) {
+      console.log(`Tab ${tabId} not found`);
+      return;
     }
 
+    const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
+    if (!settings.timeout) {
+      console.log('No timeout settings found');
+      return;
+    }
+
+    const tabInfo = tabTimers.get(tabId);
+    if (!tabInfo) {
+      console.log(`No timer info for tab ${tabId}`);
+      return;
+    }
+
+    const timeoutMs = getTimeInMs(settings.timeout, settings.timeUnit);
+    const now = Date.now();
     const totalInactiveTime = tabInfo.accumulatedTime + 
       (tabInfo.lastInactiveTime ? (now - tabInfo.lastInactiveTime) : 0);
+    
+    const remainingTime = timeoutMs - totalInactiveTime;
+    const menuTitle = tab.pinned ? 'Pinned tab - will not auto-close' : 
+                     (tabId === activeTabId ? 'Active tab' : 
+                     `Will close in ${formatTimeRemaining(remainingTime)}`);
+
+    await browser.menus.update("tab-time-remaining", {
+      title: menuTitle
+    });
+    
+    // Refresh the menu to show the updated title
+    await browser.menus.refresh();
+
+  } catch (error) {
+    console.error(`Error updating context menu for tab ${tabId}:`, error);
+  }
+}
+
+// Initialize context menu when extension loads
+initializeContextMenu();
+
+// Update the context menu when it's shown
+browser.menus.onShown.addListener(async (info, tab) => {
+  if (info.contexts.includes("tab")) {
+    await updateContextMenuTitle(tab.id);
+  }
+});
+
+// Start timer for a tab
+function startTabTimer(tabId, isNewTab = false) {
+  // Don't start timer for active tab
+  if (tabId === activeTabId) return;
+
+  const existingTimer = tabTimers.get(tabId);
+  if (existingTimer) {
+    // If tab was inactive, update last inactive time
+    if (!existingTimer.lastInactiveTime) {
+      existingTimer.lastInactiveTime = Date.now();
+    }
+  } else {
+    // Create new timer for tab
+    tabTimers.set(tabId, {
+      accumulatedTime: 0,
+      lastInactiveTime: isNewTab ? Date.now() : null
+    });
+  }
+}
+
+// Stop timer for a tab
+function stopTabTimer(tabId) {
+  const timer = tabTimers.get(tabId);
+  if (timer && timer.lastInactiveTime) {
+    // Calculate and store accumulated inactive time
+    timer.accumulatedTime += Date.now() - timer.lastInactiveTime;
+    timer.lastInactiveTime = null;
+  }
+}
+
+// Check if a tab should be closed
+async function checkTabForClose(tabId) {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    if (!tab || tab.pinned) return;
+
+    const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
+    if (!settings.timeout) return;
+
+    const timer = tabTimers.get(tabId);
+    if (!timer) return;
+
+    const timeoutMs = getTimeInMs(settings.timeout, settings.timeUnit);
+    const totalInactiveTime = timer.accumulatedTime + 
+      (timer.lastInactiveTime ? (Date.now() - timer.lastInactiveTime) : 0);
 
     if (totalInactiveTime >= timeoutMs) {
-      try {
-        await browser.tabs.remove(tabId);
-        tabTimers.delete(tabId);
-      } catch (error) {
-        console.error(`Error closing tab ${tabId}:`, error);
-      }
+      await browser.tabs.remove(tabId);
+      tabTimers.delete(tabId);
     }
+  } catch (error) {
+    console.error(`Error checking tab ${tabId} for close:`, error);
   }
 }
 
-// Function to pause timer for a tab
-function pauseTabTimer(tabId) {
-  const tabInfo = tabTimers.get(tabId);
-  if (tabInfo) {
-    if (tabInfo.lastInactiveTime) {
-      tabInfo.accumulatedTime += Date.now() - tabInfo.lastInactiveTime;
-      tabInfo.lastInactiveTime = null;
-    }
-    if (tabInfo.checkInterval) {
-      clearInterval(tabInfo.checkInterval);
-      tabInfo.checkInterval = null;
-    }
+// Listen for tab activation changes
+browser.tabs.onActivated.addListener(({ tabId, previousTabId }) => {
+  activeTabId = tabId;
+  
+  // Stop timer for newly active tab
+  stopTabTimer(tabId);
+  
+  // Start timer for previously active tab
+  if (previousTabId) {
+    startTabTimer(previousTabId);
   }
-}
-
-// Function to start or resume timer for a tab
-async function startTabTimer(tabId, isNewTab = false) {
-  // Don't start timer if tab is pinned
-  if (await isTabPinned(tabId)) {
-    return;
-  }
-
-  // Get current settings
-  const settings = await browser.storage.local.get(['timeout', 'timeUnit']);
-  if (!settings.timeout) return; // Don't start timer if no timeout is set
-
-  // Initialize or get tab info
-  let tabInfo = tabTimers.get(tabId);
-  if (!tabInfo || isNewTab) {
-    tabInfo = {
-      accumulatedTime: 0,
-      lastInactiveTime: null,
-      checkInterval: null
-    };
-    tabTimers.set(tabId, tabInfo);
-  }
-
-  // Only start timer if tab is not active
-  if (tabId !== activeTabId) {
-    tabInfo.lastInactiveTime = Date.now();
-    
-    // Set up periodic check
-    if (!tabInfo.checkInterval) {
-      tabInfo.checkInterval = setInterval(() => checkExpiredTabs(), 5000); // Check every 5 seconds
-    }
-  }
-}
+});
 
 // Listen for new tabs
 browser.tabs.onCreated.addListener((tab) => {
   startTabTimer(tab.id, true);
 });
 
-// Listen for tab activation
-browser.tabs.onActivated.addListener((activeInfo) => {
-  // Pause timer for newly activated tab
-  if (tabTimers.has(activeInfo.tabId)) {
-    pauseTabTimer(activeInfo.tabId);
-  }
-  
-  // Resume timer for previously active tab
-  if (activeTabId && activeTabId !== activeInfo.tabId) {
-    startTabTimer(activeTabId);
-  }
-  
-  activeTabId = activeInfo.tabId;
-});
-
-// Listen for settings updates from popup
-browser.runtime.onMessage.addListener((message) => {
-  if (message.action === 'updateSettings') {
-    // Restart timers for all tabs with new settings
-    browser.tabs.query({}).then((tabs) => {
-      tabs.forEach((tab) => {
-        if (tab.id !== activeTabId) {
-          startTabTimer(tab.id);
-        }
-      });
-    });
-  }
-});
-
-// Clean up when tab is closed
+// Listen for tab removal
 browser.tabs.onRemoved.addListener((tabId) => {
-  if (tabTimers.has(tabId)) {
-    pauseTabTimer(tabId);
-    tabTimers.delete(tabId);
-  }
+  tabTimers.delete(tabId);
 });
 
-// Listen for tab pinned/unpinned events
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if ('pinned' in changeInfo) {
-    if (changeInfo.pinned) {
-      // If tab becomes pinned, remove its timer
-      if (tabTimers.has(tabId)) {
-        pauseTabTimer(tabId);
-        tabTimers.delete(tabId);
-      }
-    } else {
-      // If tab becomes unpinned, start timer if it's not active
-      if (tabId !== activeTabId) {
-        startTabTimer(tabId, true);
-      }
+// Listen for window focus changes
+browser.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === browser.windows.WINDOW_ID_NONE) {
+    // Window lost focus, start timer for active tab
+    if (activeTabId) {
+      startTabTimer(activeTabId);
+    }
+  } else {
+    // Window gained focus, stop timer for active tab
+    if (activeTabId) {
+      stopTabTimer(activeTabId);
     }
   }
 });
 
-// Initialize active tab on extension startup
-browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-  if (tabs[0]) {
-    activeTabId = tabs[0].id;
-  }
-});
-
-// Set up periodic check for all tabs
-setInterval(checkExpiredTabs, 5000); // Check every 5 seconds
-
-// Listen for visibility changes (when browser window becomes visible again)
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    checkExpiredTabs();
-  }
-});
+// Periodically check tabs for closing
+setInterval(() => {
+  tabTimers.forEach((_, tabId) => {
+    checkTabForClose(tabId);
+  });
+}, 1000); // Check every second
